@@ -1,19 +1,19 @@
 #!/bin/bash
 
-# Forcer l'exécution avec sudo
+# Force execution with sudo
 if [[ $EUID -ne 0 ]]; then
-  echo "❌ Ce script doit être exécuté avec sudo : sudo $0"
+  echo "[ERR] This script must be run with sudo: sudo $0"
   exit 1
 fi
 
 set -e
 
-### === MENU INTERACTIF === ###
-echo "Que souhaitez-vous installer ?"
-echo "1) Installer uniquement Docker"
-echo "2) Installer Docker + Swarm"
-echo "3) Installer Docker + Swarm + Traefik"
-read -p "👉 Entrez le numéro de votre choix [1-3] : " CHOICE
+### === INTERACTIVE MENU === ###
+echo "What would you like to install?"
+echo "1) Install only Docker"
+echo "2) Install Docker + Swarm"
+echo "3) Install Docker + Swarm + Traefik"
+read -p "[*] Enter the number of your choice [1-3]: " CHOICE
 
 case $CHOICE in
   1)
@@ -32,68 +32,68 @@ case $CHOICE in
     INSTALL_TRAEFIK=true
     ;;
   *)
-    echo "❌ Choix invalide. Veuillez relancer le script."
+    echo "[ERR] Invalid choice. Please restart the script."
     exit 1
     ;;
 esac
 
 echo ""
-echo "📝 Récapitulatif de l'installation :"
-[ "$INSTALL_DOCKER" = true ] && echo "✔️ Docker"
-[ "$INSTALL_SWARM" = true ] && echo "✔️ Docker Swarm"
-[ "$INSTALL_TRAEFIK" = true ] && echo "✔️ Traefik + HTTPS + Auth"
+echo "[*] Installation summary:"
+[ "$INSTALL_DOCKER" = true ] && echo "[OK] Docker"
+[ "$INSTALL_SWARM" = true ] && echo "[OK] Docker Swarm"
+[ "$INSTALL_TRAEFIK" = true ] && echo "[OK] Traefik + HTTPS + Auth"
 echo ""
 
-### === INSTALLATION DE DOCKER === ###
+### === INSTALLATION OF DOCKER === ###
 if [ "$INSTALL_DOCKER" = true ]; then
-  echo "[1/6] Suppression d'éventuels anciens paquets Docker..."
+  echo "[1/6] Removing any existing Docker packages..."
   for pkg in docker.io docker-doc docker-compose podman-docker containerd runc; do
     apt-get remove -y $pkg || true
   done
 
-  echo "[2/6] Installation des dépendances et ajout de la clé GPG Docker..."
+  echo "[2/6] Installing dependencies and adding Docker GPG key..."
   apt-get update
   apt-get install -y ca-certificates curl
   install -m 0755 -d /etc/apt/keyrings
   curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
   chmod a+r /etc/apt/keyrings/docker.asc
 
-  echo "[3/6] Ajout du dépôt Docker..."
+  echo "[3/6] Adding Docker repository..."
   echo \
     "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \
     $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
 
   apt-get update
 
-  echo "[4/6] Installation de Docker..."
+  echo "[4/6] Installing Docker..."
   apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-  echo "[5/6] Ajout de l'utilisateur courant au groupe docker..."
+  echo "[5/6] Adding the current user to the Docker group..."
   REAL_USER="${SUDO_USER:-$USER}"
   usermod -aG docker "$REAL_USER"
-  echo "ℹ️ L'utilisateur $REAL_USER a été ajouté au groupe docker."
+  echo "[INFO] User $REAL_USER has been added to the Docker group."
 fi
 
 ### === INIT SWARM === ###
 if [ "$INSTALL_SWARM" = true ]; then
-  echo "[6/6] Initialisation de Docker Swarm..."
-  docker swarm init || echo "ℹ️ Swarm déjà initialisé."
+  echo "[6/6] Initializing Docker Swarm..."
+  docker swarm init || echo "[INFO] Swarm already initialized."
 fi
 
 ### === TRAEFIK === ###
 if [ "$INSTALL_TRAEFIK" = true ]; then
-  echo "[🔧] Installation de apache2-utils pour htpasswd..."
+  echo "[*] Installing apache2-utils for htpasswd..."
   apt-get install -y apache2-utils
 
-  read -p "Nom de domaine (hostname) pour Traefik : " HOSTNAME
-  read -p "Nom d'utilisateur pour l'accès sécurisé : " HTPASS_USER
-  read -s -p "Mot de passe pour $HTPASS_USER : " HTPASS_PASS
+  read -p "Domain name (hostname) for Traefik: " HOSTNAME
+  read -p "Username for secure access: " HTPASS_USER
+  read -s -p "Password for $HTPASS_USER: " HTPASS_PASS
   echo ""
-  read -p "Adresse email pour Let's Encrypt (ex: admin@example.com) : " LETSENCRYPT_EMAIL
+  read -p "Email address for Let's Encrypt (e.g., admin@example.com): " LETSENCRYPT_EMAIL
 
   HTPASS_ENCODED=$(htpasswd -nbB "$HTPASS_USER" "$HTPASS_PASS" | sed -e 's/\\/\\\\/g' -e 's/\$/\$\$/g')
 
-  echo "📁 Création des dossiers dans /data/traefik..."
+  echo "[*] Creating folders in /data/traefik..."
   mkdir -p /data/traefik/{ssl,letsencrypt,certs}
   chown -R 1000:1000 /data
 
@@ -116,7 +116,7 @@ version: '3.4'
 
 services:
   traefik:
-    image: traefik:v2.11.3
+    image: traefik:v3.6.7
     ports:
       - 80:80
       - 443:443
@@ -148,13 +148,15 @@ services:
       - /data/traefik/letsencrypt:/letsencrypt
       - /data/traefik/certs/traefik-certs.yml:/etc/traefik/dynamic/certs-traefik.yaml
     command:
-      - --providers.docker
-      - --providers.file.directory=/etc/traefik/dynamic
-      - --providers.docker.constraints=Label(\`traefik.constraint-label\`, \`traefik-public\`)
+      - --providers.swarm=true
+      - --providers.swarm.constraints=Label(\`traefik.constraint-label\`, \`traefik-public\`)
       - --providers.docker.exposedbydefault=false
-      - --providers.docker.swarmmode
+      - --providers.docker=false
+      - --providers.file.directory=/etc/traefik/dynamic
       - --entrypoints.http.address=:80
+      - --entrypoints.http.forwardedHeaders.insecure=true
       - --entrypoints.https.address=:443
+      - --entrypoints.https.forwardedHeaders.insecure=true
       - --accesslog
       - --log
       - --api
@@ -172,7 +174,7 @@ networks:
     external: true
 EOF
 
-  echo "🔄 Création du réseau traefik-public..."
+  echo "[*] Creating the traefik-public network..."
   if ! docker network inspect traefik-public >/dev/null 2>&1; then
     docker network create \
       --driver=overlay \
@@ -180,13 +182,13 @@ EOF
       --subnet=10.123.96.0/20 \
       --ip-range=10.123.96.0/20 \
       traefik-public
-    echo "✅ Réseau 'traefik-public' créé."
+    echo "[OK] 'traefik-public' network created."
   else
-    echo "ℹ️ Réseau 'traefik-public' déjà existant."
+    echo "[INFO] 'traefik-public' network already exists."
   fi
 
-  echo "🚀 Déploiement de la stack Traefik..."
+  echo "[*] Deploying the Traefik stack..."
   docker stack deploy -c /data/traefik/docker-compose.yml traefik
 
-  echo "✅ Stack Traefik déployée avec succès sur $HOSTNAME"
+  echo "[OK] Traefik stack successfully deployed on $HOSTNAME"
 fi
